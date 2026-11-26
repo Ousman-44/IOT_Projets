@@ -1,24 +1,12 @@
-/*
- * =====================================================================
- *  NOEUD DE DIAGNOSTIC  (MAITRE I2C) - "valise du garagiste"
- * =====================================================================
- *  - Interroge le noeud principal (adresse 0x55) toutes les secondes
- *        SDA -> IO21           SCL -> IO22          + GND commun
- *  - Affiche son etat de fonctionnement sur le moniteur serie
- *  - Aucun capteur, aucun Wi-Fi
- * =====================================================================
- */
 
 #include <Wire.h>
 
-#define I2C_DEV_ADDR   0x55
-#define PIN_SDA        21
-#define PIN_SCL        22
-#define PERIODE_MS     1000
+#define I2C_DEV_ADDR  0x55
+#define PIN_SDA       21
+#define PIN_SCL       22
+#define PERIODE_MS    1000
 
-// ---------------------------------------------------------------------
-//  TABLE DES CODES ERREUR  (IDENTIQUE dans le noeud principal)
-// ---------------------------------------------------------------------
+// Codes d'erreur
 #define ERR_WIFI_LOST        1
 #define ERR_HR_DISCONNECT    2
 #define ERR_DHT_DISCONNECT   3
@@ -30,20 +18,26 @@
 
 const char* getErrorMessage(uint8_t code) {
   switch (code) {
-    case ERR_WIFI_LOST:      return "Impossible de se connecter au Wifi";
-    case ERR_HR_DISCONNECT:  return "Probleme liaison capteur cardiaque (MAX30102)";
-    case ERR_DHT_DISCONNECT: return "Probleme liaison capteur temperature (DHT11)";
-    case ERR_NO_FINGER:      return "Capteur cardiaque : doigt non detecte";
-    case ERR_TEMP_LIMIT:     return "Temperature hors limites";
-    case ERR_HR_ABNORMAL:    return "Rythme cardiaque anormal";
-    case ERR_LOW_MEMORY:     return "Memoire insuffisante";
-    default:                 return "Code erreur non repertorie";
+    case ERR_WIFI_LOST:
+      return "Impossible de se connecter au Wifi";
+    case ERR_HR_DISCONNECT:
+      return "Probleme liaison MAX30102";
+    case ERR_DHT_DISCONNECT:
+      return "Probleme liaison DHT11";
+    case ERR_NO_FINGER:
+      return "Doigt non detecte";
+    case ERR_TEMP_LIMIT:
+      return "Temperature hors limites";
+    case ERR_HR_ABNORMAL:
+      return "Rythme cardiaque anormal";
+    case ERR_LOW_MEMORY:
+      return "Memoire insuffisante";
+    default:
+      return "Code erreur non repertorie";
   }
 }
 
-// ---------------------------------------------------------------------
-//  FICHE D'ETAT  (IDENTIQUE des deux cotes)
-// ---------------------------------------------------------------------
+// Structure identique sur les deux ESP32
 struct __attribute__((packed)) TrameDiag {
   uint8_t  magic;
   uint16_t erreurs;
@@ -56,71 +50,164 @@ struct __attribute__((packed)) TrameDiag {
   uint8_t  checksum;
 };
 
-uint8_t echecs = 0;   // nombre de demandes ratees d'affilee
+static_assert(sizeof(TrameDiag) == 20, "Taille trame incorrecte");
 
-// ---------------------------------------------------------------------
-//  INITIALISATION
-// ---------------------------------------------------------------------
+uint8_t echecs = 0;
+
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   delay(1000);
-  Wire.begin(PIN_SDA, PIN_SCL, 100000);
+
+  Serial.println("=== DIAGNOSTIC I2C - NOUVELLE VERSION ===");
+
+  if (!Wire.begin(PIN_SDA, PIN_SCL, 100000)) {
+    Serial.println("[ERREUR] Initialisation I2C impossible");
+    while (true) {
+      delay(1000);
+    }
+  }
+
   Wire.setTimeOut(50);
-  Serial.println("=== NOEUD DE DIAGNOSTIC (maitre) ===");
+
+  Serial.println("Bus I2C initialise");
+  Serial.println("SDA : GPIO 21");
+  Serial.println("SCL : GPIO 22");
+  Serial.println("Adresse esclave : 0x55");
+  Serial.printf("Taille trame : %u octets\n",
+                (unsigned int)sizeof(TrameDiag));
 }
 
-// ---------------------------------------------------------------------
-//  BOUCLE PRINCIPALE
-// ---------------------------------------------------------------------
 void loop() {
   delay(PERIODE_MS);
 
-  TrameDiag t;
-  bool ok = false;
+  Serial.println("--------------------------------");
 
-  size_t n = Wire.requestFrom((uint16_t)I2C_DEV_ADDR, sizeof(TrameDiag));
-  if (n == sizeof(TrameDiag)) {
-    Wire.readBytes((uint8_t*)&t, n);
-    uint8_t* p = (uint8_t*)&t;
-    uint8_t  c = 0;
-    for (size_t i = 0; i < sizeof(TrameDiag) - 1; i++) c ^= p[i];
-    ok = (t.magic == 0xAA && c == t.checksum);
-  }
-  while (Wire.available()) Wire.read();   // vide ce qui reste
+  // 1. Verifier la presence de l'esclave
+  Wire.beginTransmission(I2C_DEV_ADDR);
+  uint8_t erreur = Wire.endTransmission();
 
-  Serial.println("-----------------------------");
+  Serial.printf("Test adresse I2C 0x55 : %d\n", erreur);
 
-  // 1. Le noeud principal ne repond pas
-  if (!ok) {
-    echecs++;
-    if (echecs >= 2)
-      Serial.println("[ERREUR] Noeud principal ne repond pas (liaison I2C coupee ou noeud eteint)");
-    else
-      Serial.println("[ATTENTION] Reponse invalide, nouvel essai...");
+  if (erreur != 0) {
+    if (echecs < 255) echecs++;
+
+    switch (erreur) {
+      case 2:
+        Serial.println("[ERREUR] Adresse 0x55 non reconnue");
+        break;
+
+      case 3:
+        Serial.println("[ERREUR] Donnees non acquittees");
+        break;
+
+      case 4:
+        Serial.println("[ERREUR] Communication I2C");
+        break;
+
+      case 5:
+        Serial.println("[ERREUR] Timeout I2C");
+        break;
+
+      default:
+        Serial.println("[ERREUR] Esclave inaccessible");
+        break;
+    }
+
+    Serial.printf("Echecs consecutifs : %d\n", echecs);
     return;
   }
+
+  Serial.println("[OK] Noeud principal detecte");
+
+  // 2. Demander la trame
+  TrameDiag t = {};
+
+  size_t n = Wire.requestFrom(
+    (uint16_t)I2C_DEV_ADDR,
+    sizeof(TrameDiag)
+  );
+
+  Serial.printf("Octets recus : %u / %u\n",
+                (unsigned int)n,
+                (unsigned int)sizeof(TrameDiag));
+
+  if (n != sizeof(TrameDiag)) {
+    Serial.println("[ERREUR] Taille de trame incorrecte");
+
+    while (Wire.available()) {
+      Wire.read();
+    }
+
+    return;
+  }
+
+  size_t lus = Wire.readBytes((uint8_t*)&t, n);
+
+  if (lus != sizeof(TrameDiag)) {
+    Serial.println("[ERREUR] Lecture incomplete");
+
+    while (Wire.available()) {
+      Wire.read();
+    }
+
+    return;
+  }
+
+  // 3. Calculer le checksum
+  uint8_t* p = (uint8_t*)&t;
+  uint8_t c = 0;
+
+  for (size_t i = 0; i < sizeof(TrameDiag) - 1; i++) {
+    c ^= p[i];
+  }
+
+  Serial.printf("Magic recu : 0x%02X\n", t.magic);
+  Serial.printf("Checksum recu : 0x%02X\n", t.checksum);
+  Serial.printf("Checksum calcule : 0x%02X\n", c);
+
+  // 4. Verifier la validite de la trame
+  if (t.magic != 0xAA) {
+    Serial.println("[ERREUR] Identifiant magic incorrect");
+    return;
+  }
+
+  if (c != t.checksum) {
+    Serial.println("[ERREUR] Checksum incorrect");
+    return;
+  }
+
   echecs = 0;
 
-  Serial.printf("Noeud principal actif depuis %lu s | memoire libre : %lu octets\n",
-                (unsigned long)t.uptime, (unsigned long)t.memLibre);
+  Serial.println("[OK] Trame I2C valide");
 
-  // 2. Etat general
+  // 5. Afficher l'etat du noeud principal
+  Serial.printf("Temps actif : %lu s\n",
+                (unsigned long)t.uptime);
+
+  Serial.printf("Memoire libre : %lu octets\n",
+                (unsigned long)t.memLibre);
+
+  // 6. Afficher les codes d'erreur
   if (t.erreurs == 0) {
-    Serial.println("Fonctionnement nominal : acquisition capteur en cours");
+    Serial.println("Fonctionnement nominal");
   } else {
     for (uint8_t code = 1; code < NB_ERR; code++) {
       if (t.erreurs & (1 << code)) {
-        Serial.printf("[ERREUR %d] %s\n", code, getErrorMessage(code));
+        Serial.printf("[ERREUR %d] %s\n",
+                      code, getErrorMessage(code));
       }
     }
   }
 
-  // 3. Dernieres mesures valides
+  // 7. Afficher les mesures
   if (!(t.erreurs & (1 << ERR_DHT_DISCONNECT))) {
-    Serial.printf("Temperature : %.1f C | Humidite : %.1f %%\n",
-                  t.temp10 / 10.0, t.hum10 / 10.0);
+    Serial.printf("Temperature : %.1f C\n", t.temp10 / 10.0);
+    Serial.printf("Humidite : %.1f %%\n", t.hum10 / 10.0);
   }
-  if (!(t.erreurs & ((1 << ERR_HR_DISCONNECT) | (1 << ERR_NO_FINGER)))) {
-    Serial.printf("Rythme cardiaque : %d bpm | SpO2 : %d %%\n", t.bpm, t.spo2);
+
+  if (!(t.erreurs & ((1 << ERR_HR_DISCONNECT) |
+                     (1 << ERR_NO_FINGER)))) {
+    Serial.printf("Rythme cardiaque : %d bpm\n", t.bpm);
+    Serial.printf("SpO2 : %d %%\n", t.spo2);
   }
 }
