@@ -2,7 +2,7 @@
  * =====================================================================
  *  NOEUD DE DIAGNOSTIC  (MAITRE I2C) - "valise du garagiste"
  * =====================================================================
- *  - Interroge le noeud principal (adresse 0x55) toutes les 2 s
+ *  - Interroge le noeud principal (adresse 0x55) toutes les secondes
  *        SDA -> IO21           SCL -> IO22          + GND commun
  *  - Affiche son etat de fonctionnement sur le moniteur serie
  *  - Aucun capteur, aucun Wi-Fi
