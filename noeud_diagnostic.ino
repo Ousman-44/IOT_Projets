@@ -14,7 +14,8 @@
 #define ERR_TEMP_LIMIT       5
 #define ERR_HR_ABNORMAL      6
 #define ERR_LOW_MEMORY       7
-#define NB_ERR               8
+#define ERR_MQTT_LOST        8
+#define NB_ERR               9
 
 const char* getErrorMessage(uint8_t code) {
   switch (code) {
